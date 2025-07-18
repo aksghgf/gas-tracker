@@ -1,103 +1,171 @@
-import Image from "next/image";
+"use client";
+import { useEffect, useState } from "react";
+import { getProvider } from "../utils/web3";
+import { useGasStore } from "../store/gasStore";
+import { fetchEthUsdPrice } from "../utils/uniswap";
+import GasChart from "../components/GasChart";
 
-export default function Home() {
+const CHAINS = ["ethereum", "polygon", "arbitrum"];
+
+export default function HomePage() {
+  const setChainData = useGasStore((s) => s.setChainData);
+  const setUsdPrice = useGasStore((s) => s.setUsdPrice);
+  const { chains, usdPrice } = useGasStore();
+  const [mode, setMode] = useState("live");
+  const [amount, setAmount] = useState(0.5); // default 0.5 ETH
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Poll for new blocks and update gas data every 6 seconds
+  useEffect(() => {
+    if (!mounted) return;
+    let interval;
+    const fetchGasData = async () => {
+      for (const chain of CHAINS) {
+        try {
+          const res = await fetch(`/api/gas?chain=${chain}`);
+          if (!res.ok) continue;
+          const data = await res.json();
+          setChainData(chain, {
+            baseFee: data.baseFee,
+            priorityFee: data.priorityFee,
+          });
+        } catch (err) {
+          // ignore
+        }
+      }
+    };
+    fetchGasData();
+    interval = setInterval(fetchGasData, 6000);
+    return () => clearInterval(interval);
+  }, [setChainData, mounted]);
+
+  // Live ETH/USD price updates
+  useEffect(() => {
+    if (!mounted) return;
+    const provider = getProvider("ethereum");
+    let interval;
+    const fetchPrice = async () => {
+      const price = await fetchEthUsdPrice(provider);
+      if (price) setUsdPrice(price);
+    };
+    fetchPrice();
+    interval = setInterval(fetchPrice, 6000);
+    return () => clearInterval(interval);
+  }, [setUsdPrice, mounted]);
+
+  // Calculate USD cost for each chain
+  const calcCost = (chain) => {
+    const { baseFee, priorityFee } = chains[chain];
+    return ((baseFee + priorityFee) * 21000 * usdPrice * amount).toFixed(2);
+  };
+
+  if (!mounted) return null;
+
+  // --- Candlestick aggregation for ethereum chain ---
+  function aggregateCandles(history, intervalMs = 15 * 60 * 1000) {
+    if (!history || history.length === 0) return [];
+    // Sort by timestamp just in case
+    const sorted = [...history].sort((a, b) => a.timestamp - b.timestamp);
+    const candles = [];
+    let candle = null;
+    let candleStart = null;
+    let count = 0;
+    for (const entry of sorted) {
+      const t = Math.floor(entry.timestamp / intervalMs) * intervalMs;
+      if (candleStart === null || t !== candleStart) {
+        if (candle && count > 0) candles.push(candle);
+        candleStart = t;
+        candle = {
+          time: Math.floor(t / 1000),
+          open: entry.baseFee,
+          high: entry.baseFee,
+          low: entry.baseFee,
+          close: entry.baseFee,
+        };
+        count = 1;
+      } else {
+        candle.high = Math.max(candle.high, entry.baseFee);
+        candle.low = Math.min(candle.low, entry.baseFee);
+        candle.close = entry.baseFee;
+        count++;
+      }
+    }
+    if (candle && count > 0) candles.push(candle);
+    return candles;
+  }
+
+  // Use ethereum chain for the chart
+  const ethHistory = chains.ethereum.history;
+  const ethCandles = aggregateCandles(ethHistory);
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.js
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+    <div className="p-6">
+      <h1 className="text-2xl font-bold mb-4">Gas Tracker Home</h1>
+      <div className="mb-4">
+        <button
+          className={`mr-2 px-4 py-2 rounded ${mode === "live" ? "bg-blue-600 text-white" : "bg-gray-200"}`}
+          onClick={() => setMode("live")}
+        >
+          Live Mode
+        </button>
+        <button
+          className={`px-4 py-2 rounded ${mode === "simulation" ? "bg-blue-600 text-white" : "bg-gray-200"}`}
+          onClick={() => setMode("simulation")}
+        >
+          Simulation Mode
+        </button>
+      </div>
+      {mode === "simulation" && (
+        <div className="mb-4">
+          <label className="mr-2">Amount (ETH):</label>
+          <input
+            type="number"
+            value={amount}
+            onChange={e => setAmount(Number(e.target.value))}
+            className="border px-2 py-1 rounded"
+            min={0}
+            step={0.01}
+          />
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      )}
+      <div className="mb-4">
+        <h2 className="font-semibold mb-2">Current Gas Data</h2>
+        <table className="min-w-full border">
+          <thead>
+            <tr>
+              <th className="border px-2">Chain</th>
+              <th className="border px-2">Base Fee (Gwei)</th>
+              <th className="border px-2">Priority Fee (Gwei)</th>
+              <th className="border px-2">ETH/USD</th>
+              <th className="border px-2">Tx Cost (USD)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.keys(chains).map(chain => (
+              <tr key={chain}>
+                <td className="border px-2">{chain}</td>
+                <td className="border px-2">{chains[chain].baseFee.toFixed(2)}</td>
+                <td className="border px-2">{chains[chain].priorityFee.toFixed(2)}</td>
+                <td className="border px-2">{usdPrice.toFixed(2)}</td>
+                <td className="border px-2">
+                  {mode === "simulation" ? calcCost(chain) : "-"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {/* Step 9: Candlestick chart placeholder */}
+      <div className="mt-8">
+        <h2 className="font-semibold mb-2">Gas Price Volatility (15-min Candlestick)</h2>
+        <div className="border rounded bg-white" style={{ height: 300 }}>
+          <GasChart data={ethCandles} />
+        </div>
+      </div>
     </div>
   );
 }
